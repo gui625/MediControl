@@ -1,0 +1,1422 @@
+"use client"
+
+import { useState, useEffect, useRef } from "react"
+import { useRouter } from "next/navigation"
+import { Clock, Pill, Trash2, Edit, LogOut, Bell, BellOff, Plus, Layers, Check } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Switch } from "@/components/ui/switch"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
+import { useToast } from "@/hooks/use-toast"
+import { useAuth } from "@/contexts/auth-context"
+
+// Tipo para os medicamentos
+type Medicamento = {
+  id: string
+  userId: string
+  nome: string
+  quantidade: number
+  horarios: string[]
+  instrucoes?: string
+  lembretes: boolean
+  antecedenciaLembrete: number // minutos antes
+  grupoId?: string
+  historicoTomadas: {
+    data: string
+    horario: string
+    tomadoEm: string
+  }[]
+}
+
+// Tipo para grupos de medicamentos
+type GrupoMedicamentos = {
+  id: string
+  userId: string
+  nome: string
+  horarios: string[]
+  medicamentosIds: string[]
+  historicoTomadas: {
+    data: string
+    horario: string
+    tomadoEm: string
+  }[]
+}
+
+export default function Home() {
+  const router = useRouter()
+  const { toast } = useToast()
+  const { user, logout, isLoading } = useAuth()
+  const notificacoesPermitidas = useRef<boolean>(false)
+  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+
+  const [medicamentos, setMedicamentos] = useState<Medicamento[]>([])
+  const [grupos, setGrupos] = useState<GrupoMedicamentos[]>([])
+  const [novoMedicamento, setNovoMedicamento] = useState<string>("")
+  const [novaQuantidade, setNovaQuantidade] = useState<number>(1)
+  const [novoHorario, setNovoHorario] = useState<string>("")
+  const [horariosSelecionados, setHorariosSelecionados] = useState<string[]>([])
+  const [instrucoes, setInstrucoes] = useState<string>("")
+  const [lembreteAtivado, setLembreteAtivado] = useState<boolean>(true)
+  const [antecedenciaLembrete, setAntecedenciaLembrete] = useState<number>(15)
+  const [editandoId, setEditandoId] = useState<string | null>(null)
+  const [grupoSelecionado, setGrupoSelecionado] = useState<string>("")
+
+  // Estados para o modal de grupo
+  const [novoGrupo, setNovoGrupo] = useState<string>("")
+  const [horarioGrupo, setHorarioGrupo] = useState<string>("")
+  const [horariosGrupo, setHorariosGrupo] = useState<string[]>([])
+  const [medicamentosSelecionados, setMedicamentosSelecionados] = useState<string[]>([])
+  const [editandoGrupoId, setEditandoGrupoId] = useState<string | null>(null)
+  const [mostrarDialogPermissao, setMostrarDialogPermissao] = useState<boolean>(false)
+
+  // Redirecionar para login se não estiver autenticado
+  useEffect(() => {
+    if (!isLoading && !user) {
+      router.push("/login")
+    }
+  }, [user, isLoading, router])
+
+  // Verificar permissão de notificações
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "granted") {
+        notificacoesPermitidas.current = true
+      } else if (Notification.permission !== "denied") {
+        setMostrarDialogPermissao(true)
+      }
+    }
+  }, [])
+
+  // Carregar medicamentos e grupos do localStorage ao iniciar
+  useEffect(() => {
+    if (user) {
+      // Carregar medicamentos
+      const todosMedicamentos = JSON.parse(localStorage.getItem("medicamentos") || "[]")
+      const medicamentosDoUsuario = todosMedicamentos.filter((med: Medicamento) => med.userId === user.id)
+      setMedicamentos(medicamentosDoUsuario)
+
+      // Carregar grupos
+      const todosGrupos = JSON.parse(localStorage.getItem("gruposMedicamentos") || "[]")
+      const gruposDoUsuario = todosGrupos.filter((grupo: GrupoMedicamentos) => grupo.userId === user.id)
+      setGrupos(gruposDoUsuario)
+    }
+  }, [user])
+
+  // Salvar medicamentos no localStorage quando houver alterações
+  useEffect(() => {
+    if (user && medicamentos.length >= 0) {
+      const todosMedicamentos = JSON.parse(localStorage.getItem("medicamentos") || "[]")
+      const medicamentosDeOutrosUsuarios = todosMedicamentos.filter((med: Medicamento) => med.userId !== user.id)
+      const medicamentosAtualizados = [...medicamentosDeOutrosUsuarios, ...medicamentos]
+      localStorage.setItem("medicamentos", JSON.stringify(medicamentosAtualizados))
+    }
+  }, [medicamentos, user])
+
+  // Salvar grupos no localStorage quando houver alterações
+  useEffect(() => {
+    if (user && grupos.length >= 0) {
+      const todosGrupos = JSON.parse(localStorage.getItem("gruposMedicamentos") || "[]")
+      const gruposDeOutrosUsuarios = todosGrupos.filter((grupo: GrupoMedicamentos) => grupo.userId !== user.id)
+      const gruposAtualizados = [...gruposDeOutrosUsuarios, ...grupos]
+      localStorage.setItem("gruposMedicamentos", JSON.stringify(gruposAtualizados))
+    }
+  }, [grupos, user])
+
+  // Sistema de verificação de lembretes
+  useEffect(() => {
+    // Configurar verificação periódica de lembretes
+    if (notificacoesPermitidas.current && user) {
+      // Limpar intervalo anterior se existir
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+      }
+
+      // Verificar lembretes a cada minuto
+      intervalRef.current = setInterval(() => {
+        verificarLembretes()
+      }, 60000) // 60 segundos
+
+      // Verificar imediatamente ao carregar
+      verificarLembretes()
+    }
+
+    // Limpar intervalo ao desmontar
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+      }
+    }
+  }, [medicamentos, grupos, user])
+
+  // Função para verificar lembretes
+  const verificarLembretes = () => {
+    if (!notificacoesPermitidas.current) return
+
+    const agora = new Date()
+    const horaAtual = agora.getHours()
+    const minutoAtual = agora.getMinutes()
+
+    // Verificar medicamentos individuais
+    medicamentos.forEach((med) => {
+      if (med.lembretes) {
+        med.horarios.forEach((horario) => {
+          const [hora, minuto] = horario.split(":").map(Number)
+
+          // Calcular o horário do lembrete (considerando a antecedência)
+          const lembreteHora = hora
+          const lembreteMinuto = minuto - med.antecedenciaLembrete
+
+          // Ajustar para hora anterior se necessário
+          const horaAjustada = lembreteMinuto < 0 ? lembreteHora - 1 : lembreteHora
+          const minutoAjustado = lembreteMinuto < 0 ? 60 + lembreteMinuto : lembreteMinuto
+
+          // Verificar se é hora de enviar o lembrete
+          if (horaAtual === horaAjustada && minutoAtual === minutoAjustado) {
+            // Verificar se já foi tomado hoje
+            const dataAtual = agora.toISOString().split("T")[0]
+            const jaFoiTomado = med.historicoTomadas.some(
+              (tomada) => tomada.data === dataAtual && tomada.horario === horario,
+            )
+
+            if (!jaFoiTomado) {
+              enviarNotificacao(
+                `Hora de tomar ${med.nome}`,
+                `Não esqueça de tomar ${med.quantidade} ${med.quantidade > 1 ? "unidades" : "unidade"} às ${horario}`,
+              )
+            }
+          }
+        })
+      }
+    })
+
+    // Verificar grupos de medicamentos
+    grupos.forEach((grupo) => {
+      grupo.horarios.forEach((horario) => {
+        const [hora, minuto] = horario.split(":").map(Number)
+
+        // Usar antecedência padrão de 15 minutos para grupos
+        const lembreteHora = hora
+        const lembreteMinuto = minuto - 15
+
+        // Ajustar para hora anterior se necessário
+        const horaAjustada = lembreteMinuto < 0 ? lembreteHora - 1 : lembreteHora
+        const minutoAjustado = lembreteMinuto < 0 ? 60 + lembreteMinuto : lembreteMinuto
+
+        // Verificar se é hora de enviar o lembrete
+        if (horaAtual === horaAjustada && minutoAtual === minutoAjustado) {
+          // Verificar se já foi tomado hoje
+          const dataAtual = agora.toISOString().split("T")[0]
+          const jaFoiTomado = grupo.historicoTomadas.some(
+            (tomada) => tomada.data === dataAtual && tomada.horario === horario,
+          )
+
+          if (!jaFoiTomado) {
+            const medicamentosDoGrupo = medicamentos.filter((med) => grupo.medicamentosIds.includes(med.id))
+
+            const nomesMedicamentos = medicamentosDoGrupo.map((med) => med.nome).join(", ")
+
+            enviarNotificacao(
+              `Hora de tomar seus medicamentos`,
+              `Grupo: ${grupo.nome}. Medicamentos: ${nomesMedicamentos}. Horário: ${horario}`,
+            )
+          }
+        }
+      })
+    })
+  }
+
+  // Função para enviar notificação
+  const enviarNotificacao = (titulo: string, corpo: string) => {
+    if (notificacoesPermitidas.current) {
+      new Notification(titulo, {
+        body: corpo,
+        icon: "/favicon.ico",
+      })
+    }
+  }
+
+  // Solicitar permissão para notificações
+  const solicitarPermissaoNotificacoes = async () => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      const permissao = await Notification.requestPermission()
+
+      if (permissao === "granted") {
+        notificacoesPermitidas.current = true
+        toast({
+          title: "Notificações ativadas",
+          description: "Você receberá lembretes para tomar seus medicamentos.",
+        })
+      } else {
+        toast({
+          title: "Notificações bloqueadas",
+          description: "Você não receberá lembretes. Você pode alterar isso nas configurações do navegador.",
+          variant: "destructive",
+        })
+      }
+
+      setMostrarDialogPermissao(false)
+    }
+  }
+
+  // Adicionar horário à lista de horários selecionados
+  const adicionarHorario = () => {
+    if (novoHorario && !horariosSelecionados.includes(novoHorario)) {
+      setHorariosSelecionados([...horariosSelecionados, novoHorario])
+      setNovoHorario("")
+    }
+  }
+
+  // Adicionar horário ao grupo
+  const adicionarHorarioGrupo = () => {
+    if (horarioGrupo && !horariosGrupo.includes(horarioGrupo)) {
+      setHorariosGrupo([...horariosGrupo, horarioGrupo])
+      setHorarioGrupo("")
+    }
+  }
+
+  // Remover horário da lista
+  const removerHorario = (horario: string) => {
+    setHorariosSelecionados(horariosSelecionados.filter((h) => h !== horario))
+  }
+
+  // Remover horário do grupo
+  const removerHorarioGrupo = (horario: string) => {
+    setHorariosGrupo(horariosGrupo.filter((h) => h !== horario))
+  }
+
+  // Adicionar novo medicamento
+  const adicionarMedicamento = () => {
+    if (!user) return
+
+    if (!novoMedicamento) {
+      toast({
+        title: "Erro",
+        description: "Por favor, informe o nome do medicamento.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (horariosSelecionados.length === 0) {
+      toast({
+        title: "Erro",
+        description: "Por favor, adicione pelo menos um horário.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (editandoId) {
+      // Atualizar medicamento existente
+      const medicamentosAtualizados = medicamentos.map((med) =>
+        med.id === editandoId
+          ? {
+              ...med,
+              nome: novoMedicamento,
+              quantidade: novaQuantidade,
+              horarios: [...horariosSelecionados],
+              instrucoes: instrucoes,
+              lembretes: lembreteAtivado,
+              antecedenciaLembrete: antecedenciaLembrete,
+              grupoId: grupoSelecionado || undefined,
+            }
+          : med,
+      )
+      setMedicamentos(medicamentosAtualizados)
+      toast({
+        title: "Medicamento atualizado",
+        description: `${novoMedicamento} foi atualizado com sucesso.`,
+      })
+    } else {
+      // Adicionar novo medicamento
+      const novoItem: Medicamento = {
+        id: Date.now().toString(),
+        userId: user.id,
+        nome: novoMedicamento,
+        quantidade: novaQuantidade,
+        horarios: [...horariosSelecionados],
+        instrucoes: instrucoes,
+        lembretes: lembreteAtivado,
+        antecedenciaLembrete: antecedenciaLembrete,
+        grupoId: grupoSelecionado || undefined,
+        historicoTomadas: [],
+      }
+      setMedicamentos([...medicamentos, novoItem])
+      toast({
+        title: "Medicamento adicionado",
+        description: `${novoMedicamento} foi adicionado com sucesso.`,
+      })
+    }
+
+    // Limpar formulário
+    setNovoMedicamento("")
+    setNovaQuantidade(1)
+    setHorariosSelecionados([])
+    setInstrucoes("")
+    setLembreteAtivado(true)
+    setAntecedenciaLembrete(15)
+    setEditandoId(null)
+    setGrupoSelecionado("")
+  }
+
+  // Adicionar ou atualizar grupo de medicamentos
+  const adicionarGrupo = () => {
+    if (!user) return
+
+    if (!novoGrupo) {
+      toast({
+        title: "Erro",
+        description: "Por favor, informe o nome do grupo.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (horariosGrupo.length === 0) {
+      toast({
+        title: "Erro",
+        description: "Por favor, adicione pelo menos um horário para o grupo.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (medicamentosSelecionados.length === 0) {
+      toast({
+        title: "Erro",
+        description: "Por favor, selecione pelo menos um medicamento para o grupo.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (editandoGrupoId) {
+      // Atualizar grupo existente
+      const gruposAtualizados = grupos.map((grupo) =>
+        grupo.id === editandoGrupoId
+          ? {
+              ...grupo,
+              nome: novoGrupo,
+              horarios: [...horariosGrupo],
+              medicamentosIds: [...medicamentosSelecionados],
+            }
+          : grupo,
+      )
+      setGrupos(gruposAtualizados)
+
+      // Atualizar medicamentos para refletir o grupo
+      const medicamentosAtualizados = medicamentos.map((med) => {
+        if (medicamentosSelecionados.includes(med.id)) {
+          return { ...med, grupoId: editandoGrupoId }
+        } else if (med.grupoId === editandoGrupoId) {
+          return { ...med, grupoId: undefined }
+        }
+        return med
+      })
+      setMedicamentos(medicamentosAtualizados)
+
+      toast({
+        title: "Grupo atualizado",
+        description: `O grupo ${novoGrupo} foi atualizado com sucesso.`,
+      })
+    } else {
+      // Adicionar novo grupo
+      const novoGrupoItem: GrupoMedicamentos = {
+        id: Date.now().toString(),
+        userId: user.id,
+        nome: novoGrupo,
+        horarios: [...horariosGrupo],
+        medicamentosIds: [...medicamentosSelecionados],
+        historicoTomadas: [],
+      }
+      setGrupos([...grupos, novoGrupoItem])
+
+      // Atualizar medicamentos para refletir o novo grupo
+      const medicamentosAtualizados = medicamentos.map((med) => {
+        if (medicamentosSelecionados.includes(med.id)) {
+          return { ...med, grupoId: novoGrupoItem.id }
+        }
+        return med
+      })
+      setMedicamentos(medicamentosAtualizados)
+
+      toast({
+        title: "Grupo adicionado",
+        description: `O grupo ${novoGrupo} foi adicionado com sucesso.`,
+      })
+    }
+
+    // Limpar formulário do grupo
+    setNovoGrupo("")
+    setHorariosGrupo([])
+    setHorarioGrupo("")
+    setMedicamentosSelecionados([])
+    setEditandoGrupoId(null)
+  }
+
+  // Editar medicamento
+  const editarMedicamento = (med: Medicamento) => {
+    setNovoMedicamento(med.nome)
+    setNovaQuantidade(med.quantidade)
+    setHorariosSelecionados(med.horarios)
+    setInstrucoes(med.instrucoes || "")
+    setLembreteAtivado(med.lembretes)
+    setAntecedenciaLembrete(med.antecedenciaLembrete)
+    setGrupoSelecionado(med.grupoId || "")
+    setEditandoId(med.id)
+  }
+
+  // Editar grupo
+  const editarGrupo = (grupo: GrupoMedicamentos) => {
+    setNovoGrupo(grupo.nome)
+    setHorariosGrupo(grupo.horarios)
+    setMedicamentosSelecionados(grupo.medicamentosIds)
+    setEditandoGrupoId(grupo.id)
+  }
+
+  // Remover medicamento
+  const removerMedicamento = (id: string) => {
+    // Remover medicamento da lista
+    setMedicamentos(medicamentos.filter((med) => med.id !== id))
+
+    // Remover medicamento de qualquer grupo que ele pertença
+    const gruposAtualizados = grupos.map((grupo) => {
+      if (grupo.medicamentosIds.includes(id)) {
+        return {
+          ...grupo,
+          medicamentosIds: grupo.medicamentosIds.filter((medId) => medId !== id),
+        }
+      }
+      return grupo
+    })
+
+    // Remover grupos vazios (sem medicamentos)
+    const gruposFiltrados = gruposAtualizados.filter((grupo) => grupo.medicamentosIds.length > 0)
+
+    setGrupos(gruposFiltrados)
+
+    toast({
+      title: "Medicamento removido",
+      description: "O medicamento foi removido com sucesso.",
+    })
+  }
+
+  // Remover grupo
+  const removerGrupo = (id: string) => {
+    // Remover grupo
+    setGrupos(grupos.filter((grupo) => grupo.id !== id))
+
+    // Atualizar medicamentos para remover a referência ao grupo
+    const medicamentosAtualizados = medicamentos.map((med) => {
+      if (med.grupoId === id) {
+        return { ...med, grupoId: undefined }
+      }
+      return med
+    })
+
+    setMedicamentos(medicamentosAtualizados)
+
+    toast({
+      title: "Grupo removido",
+      description: "O grupo foi removido com sucesso.",
+    })
+  }
+
+  // Marcar medicamento como tomado
+  const marcarComoTomado = (medicamentoId: string, horario: string) => {
+    const dataAtual = new Date().toISOString().split("T")[0] // formato YYYY-MM-DD
+    const horaAtual = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+
+    setMedicamentos(
+      medicamentos.map((med) => {
+        if (med.id === medicamentoId) {
+          // Verificar se já foi marcado hoje para este horário
+          const jaFoiMarcadoHoje = med.historicoTomadas.some(
+            (tomada) => tomada.data === dataAtual && tomada.horario === horario,
+          )
+
+          if (!jaFoiMarcadoHoje) {
+            return {
+              ...med,
+              historicoTomadas: [
+                ...med.historicoTomadas,
+                {
+                  data: dataAtual,
+                  horario: horario,
+                  tomadoEm: horaAtual,
+                },
+              ],
+            }
+          }
+        }
+        return med
+      }),
+    )
+
+    toast({
+      title: "Medicamento tomado!",
+      description: `Você marcou este medicamento como tomado às ${horaAtual}.`,
+    })
+  }
+
+  // Marcar grupo como tomado
+  const marcarGrupoComoTomado = (grupoId: string, horario: string) => {
+    const dataAtual = new Date().toISOString().split("T")[0] // formato YYYY-MM-DD
+    const horaAtual = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+
+    // Marcar o grupo como tomado
+    setGrupos(
+      grupos.map((grupo) => {
+        if (grupo.id === grupoId) {
+          // Verificar se já foi marcado hoje para este horário
+          const jaFoiMarcadoHoje = grupo.historicoTomadas.some(
+            (tomada) => tomada.data === dataAtual && tomada.horario === horario,
+          )
+
+          if (!jaFoiMarcadoHoje) {
+            return {
+              ...grupo,
+              historicoTomadas: [
+                ...grupo.historicoTomadas,
+                {
+                  data: dataAtual,
+                  horario: horario,
+                  tomadoEm: horaAtual,
+                },
+              ],
+            }
+          }
+        }
+        return grupo
+      }),
+    )
+
+    // Marcar todos os medicamentos do grupo como tomados
+    const grupo = grupos.find((g) => g.id === grupoId)
+    if (grupo) {
+      setMedicamentos(
+        medicamentos.map((med) => {
+          if (grupo.medicamentosIds.includes(med.id)) {
+            // Verificar se já foi marcado hoje para este horário
+            const jaFoiMarcadoHoje = med.historicoTomadas.some(
+              (tomada) => tomada.data === dataAtual && tomada.horario === horario,
+            )
+
+            if (!jaFoiMarcadoHoje) {
+              return {
+                ...med,
+                historicoTomadas: [
+                  ...med.historicoTomadas,
+                  {
+                    data: dataAtual,
+                    horario: horario,
+                    tomadoEm: horaAtual,
+                  },
+                ],
+              }
+            }
+          }
+          return med
+        }),
+      )
+    }
+
+    toast({
+      title: "Grupo de medicamentos tomado!",
+      description: `Você marcou este grupo como tomado às ${horaAtual}.`,
+    })
+  }
+
+  // Verificar se o medicamento foi tomado hoje em um determinado horário
+  const foiTomadoHoje = (medicamento: Medicamento, horario: string) => {
+    const dataAtual = new Date().toISOString().split("T")[0] // formato YYYY-MM-DD
+    return medicamento.historicoTomadas.some((tomada) => tomada.data === dataAtual && tomada.horario === horario)
+  }
+
+  // Verificar se o grupo foi tomado hoje em um determinado horário
+  const grupoFoiTomadoHoje = (grupo: GrupoMedicamentos, horario: string) => {
+    const dataAtual = new Date().toISOString().split("T")[0] // formato YYYY-MM-DD
+    return grupo.historicoTomadas.some((tomada) => tomada.data === dataAtual && tomada.horario === horario)
+  }
+
+  // Ordenar medicamentos por próximo horário
+  const medicamentosOrdenados = [...medicamentos].sort((a, b) => {
+    const horaA = a.horarios[0] || "23:59"
+    const horaB = b.horarios[0] || "23:59"
+    return horaA.localeCompare(horaB)
+  })
+
+  // Ordenar grupos por próximo horário
+  const gruposOrdenados = [...grupos].sort((a, b) => {
+    const horaA = a.horarios[0] || "23:59"
+    const horaB = b.horarios[0] || "23:59"
+    return horaA.localeCompare(horaB)
+  })
+
+  // Obter medicamentos sem grupo
+  const medicamentosSemGrupo = medicamentos.filter((med) => !med.grupoId)
+
+  // Função para fazer logout
+  const handleLogout = () => {
+    logout()
+    router.push("/login")
+    toast({
+      title: "Logout realizado",
+      description: "Você saiu da sua conta com sucesso.",
+    })
+  }
+
+  // Se estiver carregando ou não tiver usuário, não renderiza o conteúdo principal
+  if (isLoading || !user) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-green-50 to-blue-50 flex items-center justify-center">
+        <div className="text-center">
+          <Pill className="h-12 w-12 mx-auto mb-4 text-green-600 animate-pulse" />
+          <p className="text-lg">Carregando...</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-green-50 to-blue-50">
+      {/* Dialog para solicitar permissão de notificações */}
+      <Dialog open={mostrarDialogPermissao} onOpenChange={setMostrarDialogPermissao}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Ativar notificações</DialogTitle>
+            <DialogDescription>
+              Para receber lembretes sobre seus medicamentos, precisamos da sua permissão para enviar notificações.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end space-x-2">
+            <Button variant="outline" onClick={() => setMostrarDialogPermissao(false)}>
+              Agora não
+            </Button>
+            <Button onClick={solicitarPermissaoNotificacoes}>Permitir notificações</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <header className="bg-green-600 text-white p-4 shadow-md">
+        <div className="container mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <Pill className="h-8 w-8" />
+            <h1 className="text-2xl font-bold">MediControl</h1>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="hidden md:block">
+              <p className="text-sm">
+                Olá, <span className="font-semibold">{user.nome}</span>
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-white border-white hover:bg-green-700"
+              onClick={handleLogout}
+            >
+              <LogOut className="h-4 w-4 mr-2" />
+              Sair
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <main className="container mx-auto p-4 md:p-6">
+        <section className="mb-8 text-center">
+          <h2 className="text-3xl font-bold text-green-700 mb-2">Controle seus Medicamentos</h2>
+          <p className="text-gray-600 max-w-2xl mx-auto">
+            Olá, {user.nome}! Registre seus medicamentos, defina horários e quantidades para não esquecer de tomá-los no
+            momento certo.
+          </p>
+        </section>
+
+        <Tabs defaultValue="medicamentos" className="max-w-4xl mx-auto">
+          <TabsList className="grid w-full grid-cols-4">
+            <TabsTrigger value="medicamentos">Meus Medicamentos</TabsTrigger>
+            <TabsTrigger value="grupos">Grupos</TabsTrigger>
+            <TabsTrigger value="adicionar">Adicionar</TabsTrigger>
+            <TabsTrigger value="historico">Histórico</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="medicamentos">
+            <Card>
+              <CardHeader>
+                <CardTitle>Meus Medicamentos</CardTitle>
+                <CardDescription>Lista de medicamentos e horários cadastrados</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {medicamentosSemGrupo.length === 0 && grupos.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500">
+                    <Pill className="h-12 w-12 mx-auto mb-2 text-gray-400" />
+                    <p>Você ainda não cadastrou nenhum medicamento.</p>
+                    <p className="text-sm">Clique em "Adicionar" para começar.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {/* Medicamentos individuais (sem grupo) */}
+                    {medicamentosSemGrupo.length > 0 && (
+                      <div>
+                        <h3 className="text-lg font-medium mb-3">Medicamentos Individuais</h3>
+                        <div className="grid gap-4">
+                          {medicamentosOrdenados
+                            .filter((med) => !med.grupoId)
+                            .map((med) => (
+                              <Card key={med.id} className="bg-white border-l-4 border-l-green-500">
+                                <CardContent className="p-4">
+                                  <div className="flex justify-between items-start">
+                                    <div>
+                                      <h3 className="font-bold text-lg text-green-700">{med.nome}</h3>
+                                      <p className="text-sm text-gray-600">
+                                        Quantidade por dose: <span className="font-medium">{med.quantidade}</span>
+                                      </p>
+                                      {med.instrucoes && (
+                                        <p className="text-sm text-gray-600 mt-1">Instruções: {med.instrucoes}</p>
+                                      )}
+                                      <div className="flex items-center mt-1 text-sm text-gray-600">
+                                        {med.lembretes ? (
+                                          <Bell className="h-3 w-3 mr-1 text-green-600" />
+                                        ) : (
+                                          <BellOff className="h-3 w-3 mr-1 text-gray-400" />
+                                        )}
+                                        {med.lembretes
+                                          ? `Lembretes ${med.antecedenciaLembrete} min antes`
+                                          : "Lembretes desativados"}
+                                      </div>
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <Button
+                                        variant="outline"
+                                        size="icon"
+                                        onClick={() => editarMedicamento(med)}
+                                        className="h-8 w-8"
+                                      >
+                                        <Edit className="h-4 w-4" />
+                                        <span className="sr-only">Editar</span>
+                                      </Button>
+                                      <Button
+                                        variant="outline"
+                                        size="icon"
+                                        onClick={() => removerMedicamento(med.id)}
+                                        className="h-8 w-8 text-red-500 hover:text-red-700"
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                        <span className="sr-only">Remover</span>
+                                      </Button>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-3">
+                                    <p className="text-sm font-medium text-gray-700 mb-1">Horários:</p>
+                                    <div className="flex flex-wrap gap-2">
+                                      {med.horarios.map((horario, index) => {
+                                        const tomadoHoje = foiTomadoHoje(med, horario)
+                                        return (
+                                          <div
+                                            key={index}
+                                            className={`px-2 py-1 rounded-md text-sm flex items-center gap-1 ${
+                                              tomadoHoje ? "bg-green-100 text-green-800" : "bg-blue-100 text-blue-800"
+                                            }`}
+                                          >
+                                            <Clock className="h-3 w-3" />
+                                            {horario}
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              className={`ml-1 h-6 px-2 ${
+                                                tomadoHoje
+                                                  ? "text-green-700 hover:text-green-800 cursor-default"
+                                                  : "text-blue-700 hover:text-blue-800"
+                                              }`}
+                                              onClick={() => !tomadoHoje && marcarComoTomado(med.id, horario)}
+                                              disabled={tomadoHoje}
+                                            >
+                                              {tomadoHoje ? "✓ Tomado" : "Marcar"}
+                                            </Button>
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Grupos de medicamentos */}
+                    {grupos.length > 0 && (
+                      <div className="mt-6">
+                        <h3 className="text-lg font-medium mb-3">Grupos de Medicamentos</h3>
+                        <div className="grid gap-4">
+                          {gruposOrdenados.map((grupo) => (
+                            <Card key={grupo.id} className="bg-white border-l-4 border-l-blue-500">
+                              <CardContent className="p-4">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <div className="flex items-center">
+                                      <Layers className="h-4 w-4 mr-2 text-blue-600" />
+                                      <h3 className="font-bold text-lg text-blue-700">{grupo.nome}</h3>
+                                    </div>
+                                    <p className="text-sm text-gray-600 mt-1">
+                                      {grupo.medicamentosIds.length} medicamentos neste grupo
+                                    </p>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      onClick={() => editarGrupo(grupo)}
+                                      className="h-8 w-8"
+                                    >
+                                      <Edit className="h-4 w-4" />
+                                      <span className="sr-only">Editar</span>
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      onClick={() => removerGrupo(grupo.id)}
+                                      className="h-8 w-8 text-red-500 hover:text-red-700"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                      <span className="sr-only">Remover</span>
+                                    </Button>
+                                  </div>
+                                </div>
+
+                                <div className="mt-3">
+                                  <p className="text-sm font-medium text-gray-700 mb-1">Medicamentos no grupo:</p>
+                                  <div className="flex flex-wrap gap-1 mb-3">
+                                    {medicamentos
+                                      .filter((med) => grupo.medicamentosIds.includes(med.id))
+                                      .map((med) => (
+                                        <span
+                                          key={med.id}
+                                          className="bg-gray-100 text-gray-800 px-2 py-1 rounded-full text-xs"
+                                        >
+                                          {med.nome} ({med.quantidade})
+                                        </span>
+                                      ))}
+                                  </div>
+
+                                  <p className="text-sm font-medium text-gray-700 mb-1">Horários do grupo:</p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {grupo.horarios.map((horario, index) => {
+                                      const tomadoHoje = grupoFoiTomadoHoje(grupo, horario)
+                                      return (
+                                        <div
+                                          key={index}
+                                          className={`px-2 py-1 rounded-md text-sm flex items-center gap-1 ${
+                                            tomadoHoje ? "bg-green-100 text-green-800" : "bg-blue-100 text-blue-800"
+                                          }`}
+                                        >
+                                          <Clock className="h-3 w-3" />
+                                          {horario}
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className={`ml-1 h-6 px-2 ${
+                                              tomadoHoje
+                                                ? "text-green-700 hover:text-green-800 cursor-default"
+                                                : "text-blue-700 hover:text-blue-800"
+                                            }`}
+                                            onClick={() => !tomadoHoje && marcarGrupoComoTomado(grupo.id, horario)}
+                                            disabled={tomadoHoje}
+                                          >
+                                            {tomadoHoje ? "✓ Tomado" : "Marcar todos"}
+                                          </Button>
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+                              </CardContent>
+                            </Card>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="grupos">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle>Grupos de Medicamentos</CardTitle>
+                  <CardDescription>Crie grupos para tomar vários medicamentos juntos</CardDescription>
+                </div>
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <Button>
+                      <Plus className="h-4 w-4 mr-2" />
+                      Novo Grupo
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-[500px]">
+                    <DialogHeader>
+                      <DialogTitle>{editandoGrupoId ? "Editar Grupo" : "Novo Grupo de Medicamentos"}</DialogTitle>
+                      <DialogDescription>
+                        Agrupe medicamentos que devem ser tomados nos mesmos horários.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                      <div className="grid gap-2">
+                        <Label htmlFor="grupo-nome">Nome do Grupo</Label>
+                        <Input
+                          id="grupo-nome"
+                          placeholder="Ex: Medicamentos da manhã"
+                          value={novoGrupo}
+                          onChange={(e) => setNovoGrupo(e.target.value)}
+                        />
+                      </div>
+
+                      <div className="grid gap-2">
+                        <Label>Horários do Grupo</Label>
+                        <div className="flex gap-2">
+                          <Input type="time" value={horarioGrupo} onChange={(e) => setHorarioGrupo(e.target.value)} />
+                          <Button type="button" onClick={adicionarHorarioGrupo} variant="outline" className="shrink-0">
+                            Adicionar
+                          </Button>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {horariosGrupo.map((horario, index) => (
+                            <div
+                              key={index}
+                              className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm flex items-center gap-1"
+                            >
+                              <Clock className="h-3 w-3" />
+                              {horario}
+                              <button
+                                onClick={() => removerHorarioGrupo(horario)}
+                                className="ml-1 text-blue-600 hover:text-blue-800"
+                              >
+                                &times;
+                              </button>
+                            </div>
+                          ))}
+                          {horariosGrupo.length === 0 && (
+                            <p className="text-sm text-gray-500">Nenhum horário adicionado</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid gap-2">
+                        <Label>Selecione os Medicamentos</Label>
+                        <div className="border rounded-md p-3 max-h-40 overflow-y-auto">
+                          {medicamentos.length === 0 ? (
+                            <p className="text-sm text-gray-500">Nenhum medicamento cadastrado</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {medicamentos.map((med) => (
+                                <div key={med.id} className="flex items-center space-x-2">
+                                  <Checkbox
+                                    id={`med-${med.id}`}
+                                    checked={medicamentosSelecionados.includes(med.id)}
+                                    onCheckedChange={(checked) => {
+                                      if (checked) {
+                                        setMedicamentosSelecionados([...medicamentosSelecionados, med.id])
+                                      } else {
+                                        setMedicamentosSelecionados(
+                                          medicamentosSelecionados.filter((id) => id !== med.id),
+                                        )
+                                      }
+                                    }}
+                                  />
+                                  <Label htmlFor={`med-${med.id}`} className="text-sm font-normal cursor-pointer">
+                                    {med.nome} ({med.quantidade})
+                                  </Label>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button type="submit" onClick={adicionarGrupo}>
+                        {editandoGrupoId ? "Atualizar Grupo" : "Criar Grupo"}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </CardHeader>
+              <CardContent>
+                {grupos.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500">
+                    <Layers className="h-12 w-12 mx-auto mb-2 text-gray-400" />
+                    <p>Você ainda não criou nenhum grupo de medicamentos.</p>
+                    <p className="text-sm">Crie grupos para tomar vários medicamentos nos mesmos horários.</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-4">
+                    {gruposOrdenados.map((grupo) => (
+                      <Card key={grupo.id} className="bg-white border-l-4 border-l-blue-500">
+                        <CardContent className="p-4">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="flex items-center">
+                                <Layers className="h-4 w-4 mr-2 text-blue-600" />
+                                <h3 className="font-bold text-lg text-blue-700">{grupo.nome}</h3>
+                              </div>
+                              <p className="text-sm text-gray-600 mt-1">Horários: {grupo.horarios.join(", ")}</p>
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                onClick={() => editarGrupo(grupo)}
+                                className="h-8 w-8"
+                              >
+                                <Edit className="h-4 w-4" />
+                                <span className="sr-only">Editar</span>
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                onClick={() => removerGrupo(grupo.id)}
+                                className="h-8 w-8 text-red-500 hover:text-red-700"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                <span className="sr-only">Remover</span>
+                              </Button>
+                            </div>
+                          </div>
+
+                          <div className="mt-3">
+                            <p className="text-sm font-medium text-gray-700 mb-1">Medicamentos:</p>
+                            <div className="flex flex-wrap gap-2">
+                              {medicamentos
+                                .filter((med) => grupo.medicamentosIds.includes(med.id))
+                                .map((med) => (
+                                  <span key={med.id} className="bg-gray-100 text-gray-800 px-2 py-1 rounded-md text-sm">
+                                    {med.nome} ({med.quantidade})
+                                  </span>
+                                ))}
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="adicionar">
+            <Card>
+              <CardHeader>
+                <CardTitle>{editandoId ? "Editar Medicamento" : "Adicionar Novo Medicamento"}</CardTitle>
+                <CardDescription>Preencha os dados do medicamento e os horários para tomá-lo</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="nome">Nome do Medicamento</Label>
+                  <Input
+                    id="nome"
+                    placeholder="Ex: Paracetamol"
+                    value={novoMedicamento}
+                    onChange={(e) => setNovoMedicamento(e.target.value)}
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="quantidade">Quantidade por dose</Label>
+                  <Input
+                    id="quantidade"
+                    type="number"
+                    min="1"
+                    value={novaQuantidade}
+                    onChange={(e) => setNovaQuantidade(Number.parseInt(e.target.value) || 1)}
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="instrucoes">Instruções (opcional)</Label>
+                  <Input
+                    id="instrucoes"
+                    placeholder="Ex: Tomar após as refeições"
+                    value={instrucoes}
+                    onChange={(e) => setInstrucoes(e.target.value)}
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label>Horários</Label>
+                  <div className="flex gap-2">
+                    <Input type="time" value={novoHorario} onChange={(e) => setNovoHorario(e.target.value)} />
+                    <Button type="button" onClick={adicionarHorario} variant="outline" className="shrink-0">
+                      Adicionar
+                    </Button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {horariosSelecionados.map((horario, index) => (
+                      <div
+                        key={index}
+                        className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm flex items-center gap-1"
+                      >
+                        <Clock className="h-3 w-3" />
+                        {horario}
+                        <button
+                          onClick={() => removerHorario(horario)}
+                          className="ml-1 text-blue-600 hover:text-blue-800"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    ))}
+                    {horariosSelecionados.length === 0 && (
+                      <p className="text-sm text-gray-500">Nenhum horário adicionado</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="grupo">Grupo (opcional)</Label>
+                  <Select value={grupoSelecionado} onValueChange={setGrupoSelecionado}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione um grupo ou deixe em branco" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Sem grupo</SelectItem>
+                      {grupos.map((grupo) => (
+                        <SelectItem key={grupo.id} value={grupo.id}>
+                          {grupo.nome}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="border rounded-md p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="lembretes" className="font-medium">
+                      Lembretes
+                    </Label>
+                    <Switch id="lembretes" checked={lembreteAtivado} onCheckedChange={setLembreteAtivado} />
+                  </div>
+
+                  {lembreteAtivado && (
+                    <div className="grid gap-2">
+                      <Label htmlFor="antecedencia">Lembrar com antecedência de</Label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          id="antecedencia"
+                          type="number"
+                          min="1"
+                          max="60"
+                          value={antecedenciaLembrete}
+                          onChange={(e) => setAntecedenciaLembrete(Number.parseInt(e.target.value) || 15)}
+                          className="w-20"
+                        />
+                        <span>minutos</span>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        Você receberá notificações {antecedenciaLembrete} minutos antes do horário programado.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+              <CardFooter className="flex justify-between">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setNovoMedicamento("")
+                    setNovaQuantidade(1)
+                    setHorariosSelecionados([])
+                    setInstrucoes("")
+                    setLembreteAtivado(true)
+                    setAntecedenciaLembrete(15)
+                    setEditandoId(null)
+                    setGrupoSelecionado("")
+                  }}
+                >
+                  Cancelar
+                </Button>
+                <Button onClick={adicionarMedicamento}>
+                  {editandoId ? "Atualizar Medicamento" : "Adicionar Medicamento"}
+                </Button>
+              </CardFooter>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="historico">
+            <Card>
+              <CardHeader>
+                <CardTitle>Histórico de Medicamentos</CardTitle>
+                <CardDescription>Registro de todos os medicamentos tomados</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {medicamentos.every((med) => med.historicoTomadas.length === 0) &&
+                grupos.every((grupo) => grupo.historicoTomadas.length === 0) ? (
+                  <div className="text-center py-8 text-gray-500">
+                    <Clock className="h-12 w-12 mx-auto mb-2 text-gray-400" />
+                    <p>Nenhum registro de medicamento tomado.</p>
+                    <p className="text-sm">Quando você marcar medicamentos como tomados, eles aparecerão aqui.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    <div className="space-y-4">
+                      <h3 className="text-lg font-medium">Medicamentos Individuais</h3>
+                      {medicamentos
+                        .filter((med) => med.historicoTomadas.length > 0)
+                        .map((med) => (
+                          <Card key={med.id} className="bg-white">
+                            <CardHeader className="pb-2">
+                              <CardTitle className="text-lg">{med.nome}</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="space-y-2">
+                                {med.historicoTomadas
+                                  .sort(
+                                    (a, b) =>
+                                      new Date(b.data + "T" + b.horario).getTime() -
+                                      new Date(a.data + "T" + a.horario).getTime(),
+                                  )
+                                  .map((tomada, idx) => {
+                                    const data = new Date(tomada.data).toLocaleDateString("pt-BR")
+                                    return (
+                                      <div key={idx} className="flex items-center gap-2 text-sm">
+                                        <div className="bg-green-100 text-green-800 p-1 rounded-full">
+                                          <Check className="h-4 w-4" />
+                                        </div>
+                                        <div>
+                                          <span className="font-medium">{data}</span> - Horário programado:{" "}
+                                          {tomada.horario} - Tomado às: {tomada.tomadoEm}
+                                        </div>
+                                      </div>
+                                    )
+                                  })}
+                              </div>
+                            </CardContent>
+                          </Card>
+                        ))}
+                    </div>
+
+                    {grupos.some((grupo) => grupo.historicoTomadas.length > 0) && (
+                      <div className="space-y-4">
+                        <h3 className="text-lg font-medium">Grupos de Medicamentos</h3>
+                        {grupos
+                          .filter((grupo) => grupo.historicoTomadas.length > 0)
+                          .map((grupo) => (
+                            <Card key={grupo.id} className="bg-white">
+                              <CardHeader className="pb-2">
+                                <CardTitle className="text-lg">
+                                  <div className="flex items-center">
+                                    <Layers className="h-4 w-4 mr-2 text-blue-600" />
+                                    {grupo.nome}
+                                  </div>
+                                </CardTitle>
+                              </CardHeader>
+                              <CardContent>
+                                <div className="space-y-2">
+                                  {grupo.historicoTomadas
+                                    .sort(
+                                      (a, b) =>
+                                        new Date(b.data + "T" + b.horario).getTime() -
+                                        new Date(a.data + "T" + a.horario).getTime(),
+                                    )
+                                    .map((tomada, idx) => {
+                                      const data = new Date(tomada.data).toLocaleDateString("pt-BR")
+                                      return (
+                                        <div key={idx} className="flex items-center gap-2 text-sm">
+                                          <div className="bg-blue-100 text-blue-800 p-1 rounded-full">
+                                            <Layers className="h-4 w-4" />
+                                          </div>
+                                          <div>
+                                            <span className="font-medium">{data}</span> - Horário programado:{" "}
+                                            {tomada.horario} - Tomado às: {tomada.tomadoEm}
+                                          </div>
+                                        </div>
+                                      )
+                                    })}
+                                </div>
+                              </CardContent>
+                            </Card>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </main>
+
+      <footer className="bg-green-700 text-white p-6 mt-12">
+        <div className="container mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div>
+              <h3 className="text-lg font-bold mb-2">MediControl</h3>
+              <p className="text-green-100">
+                Seu assistente para controle de medicamentos. Nunca mais esqueça de tomar seus remédios no horário
+                certo.
+              </p>
+            </div>
+            <div>
+              <h3 className="text-lg font-bold mb-2">Links Úteis</h3>
+              <ul className="space-y-1">
+                <li>
+                  <a href="#" className="text-green-100 hover:underline">
+                    Sobre nós
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="text-green-100 hover:underline">
+                    Política de Privacidade
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="text-green-100 hover:underline">
+                    Termos de Uso
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="text-green-100 hover:underline">
+                    Contato
+                  </a>
+                </li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-bold mb-2">Contato</h3>
+              <p className="text-green-100">
+                contato@medicontrol.com
+                <br />
+                (11) 1234-5678
+                <br />
+                Av. Paulista, 1000 - São Paulo/SP
+              </p>
+            </div>
+          </div>
+          <div className="mt-8 pt-4 border-t border-green-600 text-center text-green-100">
+            <p>&copy; {new Date().getFullYear()} MediControl. Todos os direitos reservados.</p>
+          </div>
+        </div>
+      </footer>
+    </div>
+  )
+}
